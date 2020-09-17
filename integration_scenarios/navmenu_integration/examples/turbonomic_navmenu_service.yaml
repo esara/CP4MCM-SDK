@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    id: monitor
+    name: Application Resource Management
+    roles: ClusterAdministrator,Administrator,Operator,Viewer
+    url: https://api-turbonomic.apps.ocp.multicloudops.io/vmturbo/oauth2/authorization/ibm
+  labels:
+    chart: monitor
+    heritage: none
+    inmenu: "true"
+    release: monitor
+    target: Turbonomic
+  name: turbonomic-navmenu
+  namespace: partner-nav-entries
+spec:
+  externalName: api-turbonomic.apps.ocp.dev.multicloudops.io
+  sessionAffinity: None
+  type: ExternalName

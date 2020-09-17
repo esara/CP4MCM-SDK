@@ -1,0 +1,22 @@
+apiVersion: integrations.sdk.management.ibm.com/v1beta1
+kind: NavMenuEntry
+metadata:
+  name: turbonomic-navmenu
+  # This resource is Cluster-Scoped, so leave the namespace blank
+spec:
+  # The name of the browser tab that the link will be opened in
+  target: "Turbonomic"
+  # The name that will be displayed on the item in the drop-down menu
+  name: "Application Resource Management"
+  # The submenu that the new entry will appear under, available options are:
+  # "administer-mcm";"sre";"monitor";"costs";"automate";"applications";"observe"
+  parentId: "monitor"
+  # User roles that will be able to see the menu item in the UI, available options are:
+  # "ClusterAdministrator";"Administrator";"Operator";"Viewer";"Editor";"Auditor";"AccountAdministrator"
+  roles:
+    - name: ClusterAdministrator
+    - name: Administrator
+    - name: Operator
+    - name: Viewer
+  # The URL that the new menu entry will link to
+  url: https://api-turbonomic.{{ .OpenShiftBaseUrl }}/vmturbo/oauth2/authorization/ibm

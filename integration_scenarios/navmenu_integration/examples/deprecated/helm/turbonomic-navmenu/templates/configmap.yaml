@@ -1,0 +1,206 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "fullname" . }}-config
+data:
+  default.conf: |
+    log_format upstream_ws '[$time_local] $remote_addr - $remote_user - $server_name to: $upstream_addr: $request upstream_response_time $upstream_response_time msec $msec request_time $request_time';
+
+    # force nginx to re-resolve dns entries every 5 seconds, otherwise it will cache old entries
+    # and fail to detect or recover from upstream server outages. To do this, we need to explicitly
+    # set the resolver to the docker name resolver and set the valid time appropriately.
+    resolver 172.30.0.10 valid=5s ipv6=off;
+
+    # for websocket upgrades
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
+    }
+
+    server {
+      listen       8080;
+      server_name  localhost;
+
+      # proxying default paths
+      location ~ ^(/$|/api|/app|/vmturbo/rest|/vmturbo/saml2|/vmturbo/oauth2) {
+          # we are using variables for the upstream servers instead of an upstream entry because
+          # of the DNS caching problem -- only nginx plus will dynamically resolve the upstream
+          # servers
+          set $api_servers api.turbonomic.svc.cluster.local;
+          proxy_pass         http://$api_servers:8080;
+          proxy_set_header   Host $http_host;
+          proxy_set_header   X-Real-IP $remote_addr;
+          proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+          # hardcode https protocol for the ForwardedHeaderFilter
+          # so that OAuth2AuthorizationRequestRedirectFilter generates an https redirect
+          proxy_set_header   X-Forwarded-Proto "https";
+          proxy_connect_timeout 10s;
+          proxy_read_timeout 6000s;
+          proxy_intercept_errors on;
+
+          # START:  NGINX HARDENING
+          # Hide Nginx version
+          server_tokens off;
+
+          #Add cookie security and httponly headers
+          proxy_cookie_path / "/; HTTPOnly; Secure";
+          # END:  NGINX HARDENING
+
+          # Ensure the proxy-side redirect from API gets rewritten to the gateway address
+          proxy_set_header   X-Forwarded-Proto $scheme;
+          proxy_redirect     http://$http_host/ $scheme://$http_host/;
+
+          # Send 503 "service unavailable" on gateway issues, where API may be down or unavailable
+          error_page 502 503 504 =503 /maintenance/;
+
+          access_log  /var/log/nginx/access.log  upstream_ws;
+      }
+
+      location /swagger/external {
+          set $api_servers api.turbonomic.svc.cluster.local;
+          proxy_pass         http://$api_servers:8080;
+          proxy_set_header   Host $http_host;
+          proxy_set_header   X-Real-IP $remote_addr;
+          proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_connect_timeout 10s;
+          proxy_read_timeout 6000s;
+          proxy_intercept_errors on;
+
+          ## Include all add_header directives for the swagger location block since we need to override the defaults
+          ## IMPORTANT: any "add_headers" for this location block must be placed inside this inclusion file directly
+          #include /etc/nginx/includes/external-swagger-headers.conf;
+
+          # START:  NGINX HARDENING
+          # Hide Nginx version
+          server_tokens off;
+
+          #Add cookie security and httponly headers
+          proxy_cookie_path / "/; HTTPOnly; Secure";
+          # END:  NGINX HARDENING
+
+          # Ensure the proxy-side redirect from API gets rewritten to the gateway address
+          proxy_set_header   X-Forwarded-Proto $scheme;
+          proxy_redirect     http://$http_host/ $scheme://$http_host/;
+
+          # Send 503 "service unavailable" on gateway issues, where API may be down or unavailable
+          error_page 502 503 504 =503 /maintenance/;
+
+          access_log  /var/log/nginx/access.log  upstream_ws;
+      }
+
+      location /assets {
+          set $api_servers api.turbonomic.svc.cluster.local;
+          proxy_pass         http://$api_servers:8080;
+          proxy_set_header   Host $http_host;
+          proxy_set_header   X-Real-IP $remote_addr;
+          proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+          access_log off;
+      }
+
+      # In a production environment the assets and docs are in a resource bundle, and there
+      # are no requests to this path. But in a local development environment with an
+      # un-compressed UI we need to support this route or else the UI won't work.
+      location /doc {
+          set $api_servers api.turbonomic.svc.cluster.local;
+          proxy_pass         http://$api_servers:8080;
+          proxy_set_header   Host $http_host;
+          proxy_set_header   X-Real-IP $remote_addr;
+          proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+          access_log off;
+      }
+
+      # For proxying websockets
+      location = /vmturbo/messages {
+          set $api_servers api.turbonomic.svc.cluster.local;
+
+          # For proxying of websockets to API SSL port
+          #proxy_pass         https://$api_servers:9443/vmturbo/messages;
+          # For proxying to non-SSL API
+          proxy_pass        http://$api_servers:8080/vmturbo/messages;
+
+          proxy_set_header   Host $http_host;
+          proxy_set_header   X-Real-IP $remote_addr;
+          proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header   X-Forwarded-Host $server_name;
+
+          proxy_set_header   X-Forwarded-Proto $scheme;
+          proxy_set_header   X-NginX-Proxy true;
+          proxy_redirect     off;
+
+          # pass websocket upgrade headers
+          proxy_http_version 1.1;
+          proxy_set_header   Upgrade $http_upgrade;
+          proxy_set_header   Connection $connection_upgrade;
+
+          # for spring security -- we don't seem to need this though.
+          # proxy_pass_header X-XSRF-TOKEN;
+
+          # long timeout to allow for WS connections idle for longer than the default 60s
+          proxy_read_timeout 6000s;
+
+          proxy_intercept_errors on;
+          proxy_cache_bypass $http_upgrade;
+
+          access_log  /var/log/nginx/access.log  upstream_ws;
+
+      }
+
+      # For proxying websockets
+      location = /vmturbo/remoteMediation {
+          set $topology_processor_servers topology-processor.turbonomic.svc.cluster.local;
+
+          # For proxying of websockets to topology processor SSL port
+          #proxy_pass https://$topology_processor_servers:9443/remoteMediation;
+          # For proxying to non-SSL topology processor
+          proxy_pass http://$topology_processor_servers:8080/remoteMediation;
+
+          proxy_set_header   Host $http_host;
+          proxy_set_header   X-Real-IP $remote_addr;
+          proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header   X-Forwarded-Host $server_name;
+
+          proxy_set_header   X-Forwarded-Proto $scheme;
+          proxy_set_header   X-NginX-Proxy true;
+          proxy_redirect     off;
+
+          # pass websocket upgrade headers
+          proxy_http_version 1.1;
+          proxy_set_header   Upgrade $http_upgrade;
+          proxy_set_header   Connection $connection_upgrade;
+
+          # for spring security -- we don't seem to need this though.
+          # proxy_pass_header X-XSRF-TOKEN;
+
+          # long timeout to allow for WS connections idle for longer than the default 60s
+          proxy_read_timeout 600s;
+
+          proxy_intercept_errors on;
+          proxy_cache_bypass $http_upgrade;
+
+
+          access_log  /var/log/nginx/access.log  upstream_ws;
+
+      }
+
+      # Diags download can take a long time. So we set the read timeout to a
+      # higher value.
+      location = /vmturbo/rest/cluster/diagnostics {
+          set $api_servers api.turbonomic.svc.cluster.local;
+          proxy_pass         http://$api_servers:8080;
+          proxy_set_header   Host $http_host;
+          proxy_set_header   X-Real-IP $remote_addr;
+          proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_connect_timeout 10s;
+          proxy_read_timeout 7200s; # 2 hours
+          proxy_intercept_errors on;
+
+          # Ensure the proxy-side redirect from API gets rewritten to the gateway address
+          proxy_set_header   X-Forwarded-Proto $scheme;
+          proxy_redirect     http://$http_host/ $scheme://$http_host/;
+
+          # Send 503 "service unavailable" on gateway issues, where API may be down or unavailable
+          error_page 502 503 504 =503 /maintenance/;
+
+          access_log  /var/log/nginx/access.log  upstream_ws;
+      }
+    }
